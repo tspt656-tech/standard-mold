@@ -1414,7 +1414,7 @@ let completedHistory = [];
 const FB_CFG = {
   apiKey: "AIzaSyDwXQ4tyYTt11tZyHda3bfhdQin7QyWD0I",
   authDomain: "standard-mold.firebaseapp.com",
-  databaseURL: "https://standard-mold-64100-default-rtdb.asia-southeast1.firebasedatabase.app",
+  databaseURL: "https://standard-mold-default-rtdb.firebaseio.com",
   projectId: "standard-mold",
   storageBucket: "standard-mold.firebasestorage.app",
   messagingSenderId: "576164685878",
@@ -5623,18 +5623,38 @@ function doSetPassword() {
   if (pw1.length < 6)                  { err.textContent = 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร'; return; }
   if (pw1 !== pw2)                     { err.textContent = 'รหัสผ่านไม่ตรงกัน กรุณาพิมพ์ใหม่'; return; }
 
-  const info = _setPwTokens[token];
-  if (!info) { err.textContent = 'Token ไม่ถูกต้องหรือถูกใช้ไปแล้ว'; return; }
+  err.textContent = '⏳ กำลังตรวจสอบ Token...';
+  err.style.color = 'var(--tx3)';
 
-  // Check uid not already taken (ignore __pending_ keys)
-  if (USERS[newUid] && !USERS[newUid].needsPw) {
-    err.textContent = 'User ID "' + newUid + '" ถูกใช้ไปแล้ว กรุณาเลือก ID อื่น';
-    return;
-  }
+  // Always fetch token from Firebase directly to avoid sync issues
+  fbDb.ref('sm_setPwTokens/' + token).get().then(snap => {
+    const info = snap.exists() ? snap.val() : (_setPwTokens[token] || null);
+    err.style.color = 'var(--red)';
 
+    if (!info) { err.textContent = 'Token ไม่ถูกต้องหรือถูกใช้ไปแล้ว'; return; }
+
+    // Sync to memory
+    _setPwTokens[token] = info;
+
+    // Check uid not already taken
+    if (USERS[newUid] && !USERS[newUid].needsPw) {
+      err.textContent = 'User ID "' + newUid + '" ถูกใช้ไปแล้ว กรุณาเลือก ID อื่น';
+      return;
+    }
+
+    _doSetPasswordFinish(token, newUid, pw1, info, err);
+  }).catch(() => {
+    // Firebase failed, fallback to memory
+    const info = _setPwTokens[token] || null;
+    err.style.color = 'var(--red)';
+    if (!info) { err.textContent = 'Token ไม่ถูกต้องหรือถูกใช้ไปแล้ว'; return; }
+    _doSetPasswordFinish(token, newUid, pw1, info, err);
+  });
+}
+
+function _doSetPasswordFinish(token, newUid, pw1, info, err) {
   const oldUid = info.uid;
 
-  // Build the final user object — no needsPw, has real pw
   const baseData = (USERS[oldUid] || {});
   const finalUser = {
     pw:      pw1,
@@ -5644,30 +5664,22 @@ function doSetPassword() {
     email:   baseData.email   || info.email || ''
   };
 
-  // Write new uid
   USERS[newUid] = finalUser;
 
-  // Remove old placeholder uid from memory and Firebase
   if (oldUid && oldUid !== newUid) {
     delete USERS[oldUid];
     if (_fbReady) fbDb.ref(FB_PATHS.users + '/' + oldUid).remove().catch(()=>{});
   }
 
-  // Consume the token
+  // Remove token from Firebase AND memory
   delete _setPwTokens[token];
   try { localStorage.setItem('sm_setPwTokens', JSON.stringify(_setPwTokens)); } catch(e) {}
   if (_fbReady) fbDb.ref('sm_setPwTokens/' + token).remove().catch(()=>{});
 
   saveAll();
 
-  // Verify it saved correctly
-  if (!USERS[newUid] || USERS[newUid].pw !== pw1) {
-    err.textContent = 'เกิดข้อผิดพลาดในการบันทึก กรุณาลองใหม่';
-    return;
-  }
-
   hideModal('setPwModal');
-  alert(`✅ ตั้งค่าบัญชีสำเร็จ!\n\nUser ID: ${newUid}\n\nคุณสามารถ Login ได้เลย`);
+  alert('✅ ตั้งค่าบัญชีสำเร็จ!\n\nUser ID: ' + newUid + '\n\nคุณสามารถ Login ได้เลย');
   document.getElementById('loginId').value = newUid;
   document.getElementById('loginPw').value = '';
   document.getElementById('loginPw').focus();
